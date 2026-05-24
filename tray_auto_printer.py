@@ -435,20 +435,95 @@ _REGISTRY_POLICY_PATHS = [
 ]
 _REGISTRY_POLICY_VALUE = "PrintingPaperSizeDefault"
 
+PWG_MAP = {
+    "ISO_A0": "iso_a0_841x1189mm",
+    "ISO_A1": "iso_a1_594x841mm",
+    "ISO_A2": "iso_a2_420x594mm",
+    "ISO_A3": "iso_a3_297x420mm",
+    "ISO_A4": "iso_a4_210x297mm",
+    "ISO_A5": "iso_a5_148x210mm",
+    "ISO_A6": "iso_a6_105x148mm",
+    "ISO_B0": "iso_b0_1000x1414mm",
+    "ISO_B1": "iso_b1_707x1000mm",
+    "ISO_B2": "iso_b2_500x707mm",
+    "ISO_B3": "iso_b3_353x500mm",
+    "ISO_B4": "iso_b4_250x353mm",
+    "ISO_B5": "iso_b5_176x250mm",
+    "ISO_B6": "iso_b6_125x176mm",
+    "ISO_C0": "iso_c0_917x1297mm",
+    "ISO_C1": "iso_c1_648x917mm",
+    "ISO_C2": "iso_c2_458x648mm",
+    "ISO_C3": "iso_c3_324x458mm",
+    "ISO_C4": "iso_c4_229x324mm",
+    "ISO_C5": "iso_c5_162x229mm",
+    "ISO_C6": "iso_c6_114x162mm",
+    "ISO_DL": "iso_dl_110x220mm",
+    "NA_LETTER": "na_letter_8.5x11in",
+    "NA_LEGAL": "na_legal_8.5x14in",
+    "NA_EXECUTIVE": "na_executive_7.25x10.5in",
+    "NA_LEDGER": "na_ledger_11x17in",
+    "NA_TABLOID": "na_tabloid_11x17in",
+    "NA_MONARCH": "na_monarch_3.875x7.5in",
+    "NA_NUMBER_9": "na_number-9_3.875x8.875in",
+    "NA_NUMBER_10": "na_number-10_4.125x9.5in",
+    "JPN_CHOU3": "jpn_chou3_120x235mm",
+    "JPN_CHOU4": "jpn_chou4_90x205mm",
+    "JPN_YOU4": "jpn_you4_105x235mm",
+    "JPN_POSTCARD": "jpn_hagaki_100x148mm",
+}
+
+def get_target_policy_dict(paper_name, width_microns=0, height_microns=0):
+    chromium_name = get_chromium_paper_name(paper_name)
+    pwg_name = PWG_MAP.get(chromium_name)
+    if pwg_name:
+        return {"name": pwg_name}
+    else:
+        w = int(width_microns) if width_microns else 0
+        h = int(height_microns) if height_microns else 0
+        if not w or not h:
+            w, h = STANDARD_DIMENSIONS.get(chromium_name, STANDARD_DIMENSIONS["ISO_A4"])
+        return {"name": "custom", "custom_size": {"width": w, "height": h}}
+
+def get_paper_registry_policy():
+    """
+    Read the current PrintingPaperSizeDefault value from the registry.
+    Returns the parsed JSON dictionary, or None if not set or failed.
+    """
+    for hive, path in _REGISTRY_POLICY_PATHS:
+        try:
+            with winreg.OpenKey(hive, path, 0, winreg.KEY_READ) as key:
+                val, _ = winreg.QueryValueEx(key, _REGISTRY_POLICY_VALUE)
+                if val:
+                    return json.loads(val)
+        except Exception:
+            pass
+    return None
+
+def is_policy_matching(target_paper_name, target_width_microns, target_height_microns):
+    current = get_paper_registry_policy()
+    if not current:
+        return False
+    target = get_target_policy_dict(target_paper_name, target_width_microns, target_height_microns)
+    
+    if current.get("name") != target.get("name"):
+        return False
+        
+    if target.get("name") == "custom":
+        curr_size = current.get("custom_size", {})
+        targ_size = target.get("custom_size", {})
+        w_diff = abs(curr_size.get("width", 0) - targ_size.get("width", 0))
+        h_diff = abs(curr_size.get("height", 0) - targ_size.get("height", 0))
+        if w_diff > 1000 or h_diff > 1000:
+            return False
+            
+    return True
+
 def set_paper_registry_policy(paper_name, width_microns=0, height_microns=0):
     """
     Write PrintingPaperSizeDefault to the Chrome/Edge registry policy paths.
-    Uses the "custom" size path with exact width/height in microns so it works
-    for every paper size — standard ISO, North American, Japanese, and
-    proprietary printer-specific sizes.
-    Returns True if at least one registry path was written successfully.
     """
-    w = int(width_microns) if width_microns else 0
-    h = int(height_microns) if height_microns else 0
-    if not w or not h:
-        # Fallback to A4 so we never write zero dimensions
-        w, h = STANDARD_DIMENSIONS["ISO_A4"]
-    policy_value = json.dumps({"name": "custom", "custom_size": {"width": w, "height": h}})
+    policy_dict = get_target_policy_dict(paper_name, width_microns, height_microns)
+    policy_value = json.dumps(policy_dict)
 
     written = False
     for hive, path in _REGISTRY_POLICY_PATHS:
@@ -476,9 +551,6 @@ def clear_paper_registry_policy():
                     pass  # Already absent
         except Exception:
             pass
-
-# Guarantee cleanup on normal exit or crash
-atexit.register(clear_paper_registry_policy)
 
 def find_matching_paper_dict_from_prefs(target_printer, target_paper):
     """
@@ -534,6 +606,7 @@ running = True
 
 # Clean any stale registry policy left from a previous crash
 clear_paper_registry_policy()
+atexit.register(clear_paper_registry_policy)
 
 # Thread-safety lock for shared configuration globals
 _config_lock = threading.Lock()
@@ -561,9 +634,6 @@ DESTINATION_NAMES = [
     "Destination", "Destino", "Ziel", "Destinazione", "目标", "送信先", "대상", "Назначение",
     "Printer", "Impresora", "Drucken", "Imprimante", "Stampare", "打印机", "印表機", "プリンター", "プリンタ", "프린터", "Принтер"
 ]
-MORE_SETTINGS_NAMES = ["More settings", "Más opciones", "Weitere Einstellungen", "Plus de paramètres", "Altre settings", "更多设置", "详细设置", "설정 더보기", "Дополнительные настройки"]
-PAPER_SIZE_NAMES = ["Paper size", "Tamaño del papel", "Papierformat", "Taille du papier", "Formato carta", "纸张尺寸", "用紙サイズ", "용지 크기", "Размер бумаги"]
-
 PRINT_NAMES = ["Print", "Imprimir", "Drucken", "Imprimer", "Stampare", "打印", "印刷", "Drukuj", "Печать", "프린트", "인쇄"]
 CANCEL_NAMES = ["Cancel", "Cancelar", "Abbrechen", "Annuler", "Annulla", "取消", "キャンセル", "Anuluj", "Отмена", "취소"]
 BLACKLIST_CLASSES = {
@@ -598,23 +668,21 @@ def get_control_value(control):
     except Exception:
         pass
         
-    # Fallback: strip matched prefixes from the button name
+    # Fallback: strip destination prefix from the button name
     name = control.Name
-    for prefix in DESTINATION_NAMES + PAPER_SIZE_NAMES:
+    for prefix in DESTINATION_NAMES:
         if name.startswith(prefix + " "):
             return name[len(prefix)+1:].strip()
         elif name == prefix:
             return ""
-            
+
     return name
 
 def walk_and_find_print_controls(control, max_depth=16, depth=1):
     controls = {
         "print_btn": None,
         "cancel_btn": None,
-        "more_settings_btn": None,
-        "destination_combo": None,
-        "paper_size_combo": None
+        "destination_combo": None
     }
     
     if depth > max_depth:
@@ -653,21 +721,12 @@ def walk_and_find_print_controls(control, max_depth=16, depth=1):
                         controls["print_btn"] = child
                     elif name in CANCEL_NAMES:
                         controls["cancel_btn"] = child
-                    elif name in MORE_SETTINGS_NAMES or name == "Fewer settings":
-                        controls["more_settings_btn"] = child
                     else:
-                        # Check for ButtonControl serving as Destination or Paper size dropdown
-                        is_dest = False
+                        # Check for ButtonControl serving as Destination dropdown
                         for dest_prefix in DESTINATION_NAMES:
                             if name.startswith(dest_prefix + " ") or name == dest_prefix:
                                 controls["destination_combo"] = child
-                                is_dest = True
                                 break
-                        if not is_dest:
-                            for paper_prefix in PAPER_SIZE_NAMES:
-                                if name.startswith(paper_prefix + " ") or name == paper_prefix:
-                                    controls["paper_size_combo"] = child
-                                    break
 
                 # Handle ComboBoxControl
                 elif control_type == "ComboBoxControl":
@@ -677,8 +736,6 @@ def walk_and_find_print_controls(control, max_depth=16, depth=1):
                         name = ""
                     if name in DESTINATION_NAMES:
                         controls["destination_combo"] = child
-                    elif name in PAPER_SIZE_NAMES:
-                        controls["paper_size_combo"] = child
 
             except Exception:
                 pass
@@ -794,9 +851,6 @@ def auto_configure_paper_size(active_win, controls, printer_mapping=None):
     if printer_mapping is None:
         printer_mapping = PRINTER_PAPER_MAPPING
     try:
-        # Temporarily allow a small search timeout for expanding menus
-        auto.SetGlobalSearchTimeout(0.3)
-
         # 1. Locate the "Destination/Printer" dropdown
         destination_combo = controls["destination_combo"]
         if not destination_combo:
@@ -811,190 +865,20 @@ def auto_configure_paper_size(active_win, controls, printer_mapping=None):
         if not target_paper_config:
             logger.info(f"No custom paper size configured for '{selected_printer}'.")
             return True, False
-            
+
         if isinstance(target_paper_config, dict):
             target_paper_name = target_paper_config.get("paper_name", "")
         else:
             target_paper_name = target_paper_config
             if "," in target_paper_config:
                 target_paper_name = target_paper_config.split(",", 1)[0].strip()
-            
-        logger.info(f"Target paper size for '{selected_printer}' is '{target_paper_name}'.")
-        
-        # 2. Locate the "Paper size" dropdown
-        paper_size_combo = controls["paper_size_combo"]
-        
-        # If hidden, try clicking "More settings" to expand the settings panel
-        if not paper_size_combo:
-            more_settings_btn = controls["more_settings_btn"]
-            if more_settings_btn:
-                logger.info("Paper size dropdown is hidden. Expanding 'More settings'...")
-                try:
-                    more_settings_btn.GetInvokePattern().Invoke()
-                except Exception:
-                    try:
-                        more_settings_btn.Click()
-                    except Exception:
-                        try:
-                            more_settings_btn.SetFocus()
-                            more_settings_btn.SendKeys('{Space}')
-                        except Exception:
-                            pass
-                
-                # Wait with retries for expansion animation to finish and expose dropdown
-                for attempt in range(15):
-                    time.sleep(0.2)
-                    new_controls = walk_and_find_print_controls(active_win, 16)
-                    paper_size_combo = new_controls["paper_size_combo"]
-                    if paper_size_combo:
-                        logger.info(f"Paper size dropdown appeared after {attempt+1} retry(s).")
-                        break
-                    # Log all button names found on first and last attempt for diagnostics
-                    if attempt == 0 or attempt == 14:
-                        try:
-                            btn_names = []
-                            def _collect_btns(ctrl, d=0):
-                                if d > 12:
-                                    return
-                                try:
-                                    for c in ctrl.GetChildren():
-                                        try:
-                                            if c.ControlTypeName in ("ButtonControl", "ComboBoxControl"):
-                                                btn_names.append(repr(c.Name))
-                                        except Exception:
-                                            pass
-                                        _collect_btns(c, d+1)
-                                except Exception:
-                                    pass
-                            _collect_btns(active_win)
-                            logger.info(f"[Diag attempt {attempt}] Buttons/combos in dialog: {btn_names[:40]}")
-                        except Exception:
-                            pass
-                        
-        if not paper_size_combo:
-            logger.warning("Could not find 'Paper size' dropdown via UI — using registry policy fallback.")
-            # PRIMARY FALLBACK: write to Windows Registry policy
-            # Chrome/Edge reads PrintingPaperSizeDefault on every print dialog open.
-            # This overrides the in-memory sticky settings without needing a browser restart.
-            w = target_paper_config.get("width_microns", 0) if isinstance(target_paper_config, dict) else 0
-            h = target_paper_config.get("height_microns", 0) if isinstance(target_paper_config, dict) else 0
-            reg_ok = set_paper_registry_policy(target_paper_name, w, h)
-            return reg_ok, reg_ok  # reopen needed if registry write succeeded
-            
-        # 3. Read and compare current paper size
-        current_paper = get_control_value(paper_size_combo)
-        if current_paper == target_paper_name:
-            logger.info(f"Paper size is already set to '{target_paper_name}' for printer '{selected_printer}'.")
-            return True, False
-            
-        # 4. Open the paper size dropdown and select target paper size
-        logger.info(f"Changing paper size from '{current_paper}' to '{target_paper_name}'...")
-        try:
-            # Try combobox expand pattern
-            paper_size_combo.GetExpandCollapsePattern().Expand()
-        except Exception:
-            try:
-                # Try button invoke pattern
-                paper_size_combo.GetInvokePattern().Invoke()
-            except Exception:
-                try:
-                    paper_size_combo.Click()
-                except Exception as ex:
-                    logger.error(f"Failed to open/click paper size dropdown: {ex}")
-                    w = target_paper_config.get("width_microns", 0) if isinstance(target_paper_config, dict) else 0
-                    h = target_paper_config.get("height_microns", 0) if isinstance(target_paper_config, dict) else 0
-                    reg_ok = set_paper_registry_policy(target_paper_name, w, h)
-                    return reg_ok, reg_ok
-                    
-        time.sleep(0.5) # Wait for dropdown menu to draw
-        
-        # Robust scanning for dropdown items
-        def clean_str(s):
-            return s.lower().replace(" ", "").replace("_", "").replace("-", "").replace("#", "")
-            
-        target_clean = clean_str(target_paper_name)
-        target_item = None
-        dropdown_items = []
-        try:
-            dropdown_items = paper_size_combo.GetChildren()
-        except Exception:
-            pass
-            
-        def scan_container_for_item(container, target_clean_val):
-            try:
-                children = container.GetChildren()
-            except Exception:
-                return None
-            for child in children:
-                try:
-                    name_clean = clean_str(child.Name)
-                    control_type = child.ControlTypeName
-                    if control_type in ["ListItemControl", "MenuItemControl", "ButtonControl", "TextControl"]:
-                        if target_clean_val in name_clean or name_clean in target_clean_val:
-                            return child
-                except Exception:
-                    pass
-                try:
-                    res = scan_container_for_item(child, target_clean_val)
-                    if res:
-                        return res
-                except Exception:
-                    pass
-            return None
-            
-        if not dropdown_items:
-            try:
-                desktop = auto.GetRootControl()
-                for child in desktop.GetChildren():
-                    if child.ClassName in ["ComboLBox", "DropDownForm", "NetWindow", "Menu", "RootView"]:
-                        dropdown_items = child.GetChildren()
-                        if dropdown_items:
-                            break
-            except Exception:
-                pass
-                
-        for item_ctrl in dropdown_items:
-            try:
-                item_name = item_ctrl.Name
-                if target_clean in clean_str(item_name) or clean_str(item_name) in target_clean:
-                    target_item = item_ctrl
-                    break
-            except Exception:
-                pass
-                
-        if not target_item:
-            target_item = scan_container_for_item(active_win, target_clean)
-            
-        if not target_item:
-            target_item = scan_container_for_item(auto.GetRootControl(), target_clean)
-            
-        if not target_item:
-            target_item = paper_size_combo.ListItemControl(Name=target_paper_name)
-            
-        if target_item and target_item.Exists(0.5, 0):
-            logger.info(f"Target paper size item '{target_item.Name}' found. Selecting/clicking it...")
-            try:
-                target_item.GetSelectionItemPattern().Select()
-            except Exception:
-                try:
-                    target_item.GetInvokePattern().Invoke()
-                except Exception:
-                    target_item.Click()
-            time.sleep(0.6)
-            logger.info("Paper size successfully updated via UI!")
-            return True, False
-        else:
-            logger.warning(f"Target paper size option '{target_paper_name}' not found in dropdown — using registry policy fallback.")
-            w = target_paper_config.get("width_microns", 0) if isinstance(target_paper_config, dict) else 0
-            h = target_paper_config.get("height_microns", 0) if isinstance(target_paper_config, dict) else 0
-            reg_ok = set_paper_registry_policy(target_paper_name, w, h)
-            return reg_ok, True
-            
+
+        logger.info(f"Target paper size for '{selected_printer}' is '{target_paper_name}'. Mapping found, proceeding to print.")
+        return True, False
+
     except Exception as e:
         logger.error(f"Error configuring paper size: {e}")
         return False, False
-    finally:
-        auto.SetGlobalSearchTimeout(0)
 
 def monitor_print_dialog():
     global running, TARGET_WINDOW_TITLE, PRINTER_PAPER_MAPPING, BROWSER_PRINT_PREFS
@@ -1076,114 +960,40 @@ def monitor_print_dialog():
 
                                 # --- Determine if paper size needs to be changed ---
                                 selected_printer = get_control_value(controls.get("destination_combo", None))
+                                if not selected_printer:
+                                    time.sleep(0.2)
+                                    controls = walk_and_find_print_controls(active_win, 16)
+                                    selected_printer = get_control_value(controls.get("destination_combo", None))
+
                                 with _config_lock:
                                     printer_mapping = PRINTER_PAPER_MAPPING
                                 target_config = printer_mapping.get(selected_printer, {}) if selected_printer else {}
-                                target_paper_name = ""
-                                if isinstance(target_config, dict):
-                                    target_paper_name = target_config.get("paper_name", "")
-                                elif isinstance(target_config, str):
-                                    target_paper_name = target_config.split(",", 1)[0].strip()
 
-                                # Check if paper size is already correct via UI
-                                paper_already_correct = False
-                                if target_paper_name:
-                                    paper_combo = controls.get("paper_size_combo")
-                                    if paper_combo:
-                                        current_paper = get_control_value(paper_combo)
-                                        def _clean(s):
-                                            return s.lower().replace(" ", "").replace("_", "").replace("-", "").replace("#", "")
-                                        if _clean(current_paper) == _clean(target_paper_name):
-                                            paper_already_correct = True
-
-                                if paper_already_correct:
-                                    # Paper size already matches — just print
-                                    logger.info(f"Paper size already correct ('{target_paper_name}'). Printing...")
-                                    config_success = True
-                                    used_prefs_fallback = False
-                                else:
-                                    # Attempt to configure paper size via UI or prefs fallback
-                                    config_success, used_prefs_fallback = auto_configure_paper_size(active_win, controls, printer_mapping)
-
-                                # --- Decide action ---
                                 should_print = False
-                                needs_reopen = False
 
-                                if config_success:
-                                    if used_prefs_fallback:
-                                        # Prefs were written while dialog is open — browser won't re-read them
-                                        # Must cancel, then reopen dialog with Ctrl+P
-                                        needs_reopen = True
-                                    else:
-                                        should_print = True
+                                if selected_printer and target_config:
+                                    paper_name = target_config.get("paper_name", "") if isinstance(target_config, dict) else target_config.split(",", 1)[0].strip()
+                                    w_microns = target_config.get("width_microns", 0) if isinstance(target_config, dict) else 0
+                                    h_microns = target_config.get("height_microns", 0) if isinstance(target_config, dict) else 0
+                                    
+                                    # Background policy update check
+                                    if not is_policy_matching(paper_name, w_microns, h_microns):
+                                        logger.info(f"Registry policy mismatch for '{selected_printer}'. Updating policy in background to '{paper_name}'...")
+                                        set_paper_registry_policy(paper_name, w_microns, h_microns)
+                                        
+                                    should_print = True
                                 else:
-                                    if selected_printer and not printer_mapping.get(selected_printer):
-                                        should_print = True
-                                        logger.info(f"No configuration mapped for '{selected_printer}'. Printing with defaults.")
-
-                                # --- Cancel & reopen flow ---
-                                if needs_reopen:
-                                    logger.info("📄 Prefs updated. Cancelling dialog to reopen with correct paper size...")
-                                    try:
-                                        cancel_button.GetInvokePattern().Invoke()
-                                    except Exception:
-                                        try:
-                                            cancel_button.Click()
-                                        except Exception:
-                                            pass
-                                    # Wait for dialog to fully close and Chrome to finish cleanup
-                                    time.sleep(2.0)
-                                    # Write prefs AFTER dialog is closed so Chrome doesn't overwrite them
-                                    _write_paper_size_to_prefs(selected_printer, target_config)
-                                    # Re-trigger Ctrl+P to reopen print dialog
-                                    try:
-                                        active_win.SendKeys("{Ctrl}p")
-                                    except Exception:
-                                        pass
-                                    # Wait for new dialog to open and render
-                                    time.sleep(3.0)
-                                    # Wake up accessibility tree for the new dialog
-                                    new_print_win = active_win.WindowControl(searchDepth=8, ClassName="RootView")
-                                    if new_print_win.Exists(0, 0):
-                                        new_doc = new_print_win.DocumentControl(searchDepth=16)
-                                        if new_doc.Exists(0, 0):
-                                            try:
-                                                new_doc.GetLegacyIAccessiblePattern()
-                                            except Exception:
-                                                pass
-                                    # Find print/cancel buttons in the new dialog
-                                    new_controls = walk_and_find_print_controls(active_win, 16)
-                                    new_print_btn = new_controls.get("print_btn")
-                                    new_cancel_btn = new_controls.get("cancel_btn")
-                                    if new_print_btn and new_cancel_btn:
-                                        logger.info("🖨️ Re-opened dialog ready. Triggering print with corrected paper size...")
-                                        cancel_name = "Cancel"
-                                        try:
-                                            cancel_name = new_cancel_btn.Name
-                                        except Exception:
-                                            pass
-                                        try:
-                                            new_print_btn.GetInvokePattern().Invoke()
-                                        except Exception:
-                                            try:
-                                                new_print_btn.SetFocus()
-                                                new_print_btn.SendKeys('{Space}')
-                                            except Exception:
-                                                pass
-                                        logger.info("✅ Print triggered. Waiting for dialog to close...")
-                                        while running:
-                                            time.sleep(0.5)
-                                            try:
-                                                if not active_win.ButtonControl(searchDepth=16, Name=cancel_name).Exists(0, 0):
-                                                    break
-                                            except Exception:
-                                                break
-                                        logger.info("🔓 Dialog closed. System re-armed and ready for next print job!")
-                                    else:
-                                        logger.warning("⚠️ Could not find print button in re-opened dialog.")
+                                    # No mapping; check if registry policy is set and clear it if so
+                                    current_policy = get_paper_registry_policy()
+                                    if current_policy:
+                                        logger.info(f"Clearing registry policy in background for unmapped printer '{selected_printer}'...")
+                                        clear_paper_registry_policy()
+                                    
+                                    logger.info(f"No custom configuration mapped for '{selected_printer}'. Printing with default settings.")
+                                    should_print = True
 
                                 # --- Direct print flow ---
-                                elif should_print:
+                                if should_print:
                                     logger.info("🖨️ Print dialog detected and verified! Triggering print...")
                                     cancel_name = "Cancel"
                                     try:
@@ -1207,14 +1017,13 @@ def monitor_print_dialog():
                                         except Exception:
                                             break
                                     logger.info("🔓 Dialog closed. System re-armed and ready for next print job!")
-                                else:
-                                    logger.warning("⚠️ Paper size configuration failed. Retrying next cycle...")
-                            finally:
-                                clear_paper_registry_policy()
+
+                            except Exception:
+                                logger.error(traceback.format_exc())
 
             except Exception:
                 logger.error(traceback.format_exc())
-                
+
             time.sleep(sleep_time)
 
 def change_title(icon, item):
@@ -1503,7 +1312,26 @@ def map_printer_size(icon, item):
                 logger.info("User cancelled browser closure. Aborting mapping.")
                 return
 
-            logger.info("Closing Chrome and Edge to unlock preference files...")
+            # Check which browsers are running before killing them
+            chrome_was_running = False
+            edge_was_running = False
+            try:
+                CREATE_NO_WINDOW = 0x08000000
+                tasklist_proc = subprocess.run(["tasklist", "/fi", "IMAGENAME eq chrome.exe"], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                if "chrome.exe" in tasklist_proc.stdout.lower():
+                    chrome_was_running = True
+            except Exception:
+                pass
+                
+            try:
+                CREATE_NO_WINDOW = 0x08000000
+                tasklist_proc = subprocess.run(["tasklist", "/fi", "IMAGENAME eq msedge.exe"], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                if "msedge.exe" in tasklist_proc.stdout.lower():
+                    edge_was_running = True
+            except Exception:
+                pass
+
+            logger.info(f"Closing browsers (Chrome running: {chrome_was_running}, Edge running: {edge_was_running}) to unlock preference files...")
 
             def kill_browsers():
                 subprocess.run(["taskkill", "/f", "/im", "chrome.exe"], capture_output=True)
@@ -1629,6 +1457,21 @@ def map_printer_size(icon, item):
             # Also write the registry policy immediately so the next print dialog uses the correct paper size
             set_paper_registry_policy(paper, int(width_microns), int(height_microns))
             logger.info("⚙️ Settings successfully applied to browsers, registry, and saved to printer_config.json.")
+
+            # Reopen the browsers if they were running
+            if chrome_was_running:
+                logger.info("Reopening Chrome...")
+                try:
+                    subprocess.Popen(["cmd.exe", "/c", "start", "chrome.exe", "--restore-last-session"], creationflags=0x08000000)
+                except Exception as e:
+                    logger.error(f"Failed to reopen Chrome: {e}")
+                    
+            if edge_was_running:
+                logger.info("Reopening Edge...")
+                try:
+                    subprocess.Popen(["cmd.exe", "/c", "start", "msedge.exe", "--restore-last-session"], creationflags=0x08000000)
+                except Exception as e:
+                    logger.error(f"Failed to reopen Edge: {e}")
             
             # Show system tray balloon notification
             try:

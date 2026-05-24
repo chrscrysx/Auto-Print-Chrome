@@ -7,8 +7,8 @@ A background Windows system-tray application that automatically detects print di
 - **Auto-Print Detection**: Hooks into the Windows UIAutomation accessibility tree to detect print dialogs without interfering with the mouse.
 - **Targeted Window Matching**: Trigger only on specific window titles (e.g., `SIMC`) or use `*` to target all Chromium windows.
 - **Per-Printer Paper Size Mapping**: Map any installed printer to a specific paper size via a Windows Forms dialog. The app stores exact dimensions (width/height in microns) and vendor IDs.
-- **Browser Preferences Injection**: Writes directly to Chrome/Edge `Preferences` files (`print_preview_sticky_settings.appState`) to enforce paper size, layout, color, scaling, margins, headers/footers, and background graphics.
-- **Registry Policy Fallback**: If UI automation cannot reach the paper size dropdown, the app writes `PrintingPaperSizeDefault` to `Software\Policies\Google\Chrome` and `Software\Policies\Microsoft\Edge`. Chrome/Edge read this on every print dialog open.
+- **Browser Preferences Injection & Relaunch**: Writes directly to Chrome/Edge `Preferences` files (`print_preview_sticky_settings.appState`) to enforce paper size, layout, color, scaling, margins, headers/footers, and background graphics. Restores running browser sessions automatically after updating.
+- **Registry Policy Enforcement**: Uses the standard `PrintingPaperSizeDefault` policy in `Software\Policies\Google\Chrome` and `Software\Policies\Microsoft\Edge` to enforce paper size defaults dynamically using standard IPP/PWG names (e.g. `iso_a4_210x297mm`) or custom dimensions.
 - **Opt-in File Logging**: Logging to `error_log.log` is disabled by default. Toggle it from the system tray menu or set `"logging_enabled": true` in `printer_config.json`.
 - **Printer Capability Scanning**: Scans all installed printers and their supported paper sizes into the config file for accurate mapping.
 - **Single Instance**: Prevents multiple copies from running simultaneously.
@@ -112,15 +112,15 @@ Right-click the tray icon to access:
 
 ## How It Works
 
-1. **Monitoring Loop**: The app polls the foreground window every 350 ms when a Chromium window is active.
-2. **Print Dialog Detection**: Uses `uiautomation` to scan for `Print` and `Cancel` buttons inside the print dialog (`Chrome_WidgetWin_1` / `RootView`).
-3. **Paper Size Check**: Reads the current destination printer and checks if a paper size mapping exists.
-4. **UI Automation Path**: If the paper size dropdown is accessible, the app expands it and selects the target size directly.
-5. **Fallback Path**: If the dropdown is inaccessible, the app:
-   - Writes `PrintingPaperSizeDefault` to the registry.
-   - Writes the full `mediaSize` dict and other settings to the browser's `Preferences` file.
-   - Cancels the current dialog, waits for Chrome to finish cleanup, then re-triggers `Ctrl+P` so the new settings take effect.
-6. **Cleanup**: The registry policy is cleared via `atexit.register` and on every loop iteration to avoid persisting forced paper sizes after the app closes.
+1. **Monitoring Loop**: The app polls the active foreground window every 350 ms when a Chromium window matches target title criteria.
+2. **Print Dialog Detection**: Uses `uiautomation` to locate print buttons and destination dropdowns in the window accessibility tree.
+3. **Paper Size Matching**:
+   - Reads the selected destination printer.
+   - If there is a mapping configured in `printer_config.json`, it converts the target paper size into its standardized IPP/PWG name format.
+   - It checks the registry to see if `PrintingPaperSizeDefault` matches the target size. If there is a mismatch, it updates the registry value in the background for subsequent printing.
+   - If there is no custom mapping for the printer, it clears the registry policy dynamically to restore default browser options.
+4. **Trigger Print**: Clicks "Print" (or sends `{Space}`) directly.
+5. **Cleanup**: The registry policy is registered to clear via `atexit` when the application quits.
 
 ## Important Notes
 
